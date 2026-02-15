@@ -6,7 +6,7 @@ Statistical Arbitrage backtesting app
 A desktop application designed for backtesting and analyzing Market Neutral (Pairs Trading) strategies. Built with a focus on analysis, it combines rigorous statistical methods with a modern, dockable GUI to visualize performance, risk, and trade micro-structure.
 Key Features
 
-    Advanced Math Engine:
+Advanced Math Engine:
 
         Automated Cointegration scanning (Engle-Granger / ADF Tests).
 
@@ -14,7 +14,7 @@ Key Features
 
         Configurable Z-Score entry/exit/stop-loss logic.
 
-    Professional GUI (PyQt6):
+Professional GUI (PyQt6):
 
         Dark theme with dockable/floating widgets.
 
@@ -22,7 +22,7 @@ Key Features
 
         Real-time "Tear Sheet" metrics (Sharpe, Sortino, CAGR, Max Drawdown).
 
-    Risk Management:
+Risk Management:
 
         Monte Carlo Simulation: Bootstrap resampling to distinguish skill from luck.
 
@@ -30,7 +30,7 @@ Key Features
 
         Cost Modeling: Realistic simulation of Slippage and Commissions.
 
-    Data Flexibility:
+Data Flexibility:
 
         Built-in Yahoo Finance downloader.
 
