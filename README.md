@@ -38,12 +38,12 @@ Key Features
 
         Save/Load strategy configurations (.json).
 
-    Tech Stack
+Tech Stack
     
-        Core: Python 3.x
+    Core: Python 3.x
     
-        UI: PyQt6 (Qt for Python)
+    UI: PyQt6 (Qt for Python)
     
-        Quant: Pandas, NumPy, Statsmodels, SciPy
+    Quant: Pandas, NumPy, Statsmodels, SciPy
     
-        Visualization: Matplotlib (embedded), YFinance
+    Visualization: Matplotlib (embedded), YFinance
