@@ -45,10 +45,27 @@ Data Flexibility:
 
 Tech Stack
     
-    Core: Python 3.x
-    
-    UI: PyQt6 (Qt for Python)
-    
-    Quant: Pandas, NumPy, Statsmodels, SciPy
-    
-    Visualization: Matplotlib (embedded), YFinance
+        Core: Python 3.x
+            
+        UI: PyQt6 (Qt for Python)
+            
+        Quant: Pandas, NumPy, Statsmodels, SciPy
+            
+        Visualization: Matplotlib (embedded), YFinance
+
+Results (sharpe ~ 1)
+
+        Parameters:
+
+                Beta Window: 120 days
+                Z-score Window: 30 days
+
+                Entry Treshold: 1.5
+                Exit Treshold (TP): -1.0
+                Stop Loss: 4.5
+
+                Commission: 0.001 (0.1% per trade)
+
+
+        
+
