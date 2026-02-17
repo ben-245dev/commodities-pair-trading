@@ -1,7 +1,6 @@
 # commodities-pair-trading
 Desktop application for Statistical Arbitrage and Pairs Trading. Built with Python &amp; PyQt6, featuring Rolling OLS, Monte Carlo stress testing, and an interactive dark-mode dashboard.
 
-Statistical Arbitrage backtesting app
 
 A desktop application designed for backtesting and analyzing Market Neutral (Pairs Trading) strategies. Built with a focus on analysis, it combines rigorous statistical methods with a modern, dockable GUI to visualize performance, risk, and trade micro-structure.
 Key Features
@@ -29,6 +28,12 @@ Risk Management:
         Risk Parity: Inverse volatility weighting for portfolio construction.
 
         Cost Modeling: Realistic simulation of Slippage and Commissions.
+
+Production:
+
+        Walk forward analysis to avoid look ahead bias
+
+        Cooldown to avoid trading bankrupting securities
 
 Data Flexibility:
 
