@@ -31,9 +31,9 @@ Risk Management:
 
 Production:
 
-        Walk forward analysis to avoid look ahead bias
+        Walk forward analysis to avoid look ahead bias.
 
-        Cooldown to avoid trading bankrupting securities
+        Cooldown to avoid trading bankrupting securities.
 
 Data Flexibility:
 
