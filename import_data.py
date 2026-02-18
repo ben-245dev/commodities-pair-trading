@@ -1,263 +1,192 @@
-# 01_build_dataset.py
+"""
+Unified Copper Dataset Builder
+------------------------------
+This script constructs a clean, USD-normalized dataset for copper-related assets.
+It handles:
+1. Multi-currency OHLCV downloading (CAD, GBP, PLN, EUR, USD).
+2. Dynamic FX conversion to a base currency (USD).
+3. Data cleaning and time-alignment across different international exchanges.
+4. Outlier removal (Winsorization) using expanding windows to avoid look-ahead bias.
+"""
+
 from __future__ import annotations
 
-import argparse
 import os
 import warnings
-from typing import List
+from typing import List, Dict, Tuple
 
 import numpy as np
 import pandas as pd
 import yfinance as yf
-
-import seaborn as sns
 import matplotlib.pyplot as plt
 
-# =============================================================================
-# 0) UNIVERSE DEFINITION (Primary Anchor + Sector Proxies + Equities)
-# =============================================================================
+# Configuration for Currency Conversion
+# Format: Suffix: (FX_Ticker, Operation, Unit_Divisor)
+FX_MAPPING = {
+    ".TO": ("CAD=X", "div", 1.0),    # CAD price / (CAD/USD rate) = USD
+    ".L":  ("GBP=X", "mul", 0.01),   # (GBX price * 0.01) * (GBP/USD rate) = USD
+    ".WA": ("PLN=X", "div", 1.0),    # PLN price / (PLN/USD rate) = USD
+    ".DE": ("EUR=X", "div", 1.0),    # EUR price / (EUR/USD rate) = USD
+    "DEFAULT": (None, "none", 1.0)
+}
 
-def get_copper_heavy_universe() -> List[str]:
+def get_copper_heavy_universe() -> Tuple[List[str], List[str]]:
     """
-    Defines the financial universe focused on copper assets.
-    
-    Includes the primary futures anchor, sector ETFs (proxies), 
-    and a selection of global copper mining equities.
-    
-    Returns:
-        List[str]: A deduplicated list of tickers.
+    Defines the investment universe: Copper Futures, ETFs, and Global Miners.
+    Returns a tuple of (Asset Tickers, Required FX Tickers).
     """
-    primary_anchor = ["HG=F"]  # Copper futures
+    primary_anchor = ["HG=F"] # Copper High Grade Futures
     sector_proxies = ["COPX", "CPER"]
 
-    # Selection of major global copper producers and explorers
+    # Global miners across different exchanges
     copper_heavy = [
         "FCX", "SCCO", "HBM", "ERO", "TECK", "GLNCY", "VALE", "BHP", "RIO",
         "FM.TO", "CS.TO", "IVN.TO",
         "ANTO.L", "KGH.WA", "NDA.DE",
         "LUNMF", "TGB",
     ]
-
-    all_tickers = primary_anchor + sector_proxies + copper_heavy
-
-    # Deduplicate while preserving original order
-    seen = set()
-    unique: List[str] = []
-    for t in all_tickers:
-        if t not in seen:
-            unique.append(t)
-            seen.add(t)
-    return unique
-
-
-# =============================================================================
-# 1) DATA ACQUISITION AND PROCESSING
-# =============================================================================
-
-def _download_ohlcv_yfinance(
-    tickers: List[str],
-    period: str,
-    interval: str,
-) -> pd.DataFrame:
-    """
-    Internal helper to download OHLCV panel data via Yahoo Finance.
     
-    Args:
-        tickers: List of financial symbols.
-        period: Data lookback period (e.g., '10y').
-        interval: Data frequency (e.g., '1d').
-        
-    Returns:
-        pd.DataFrame: Raw multi-index or single-index DataFrame.
-    """
-    if not tickers:
-        raise ValueError("Ticker list is empty.")
+    unique_assets = list(dict.fromkeys(primary_anchor + sector_proxies + copper_heavy))
 
-    data = yf.download(
-        tickers,
-        period=period,
-        interval=interval,
-        auto_adjust=False,
-        progress=False,
-        group_by="column",
-    )
-    if data is None or data.empty:
-        raise ValueError("Download failed or returned empty dataset.")
-    return data
-
-def build_and_save_ohlcv_full_dataset(
-    tickers: List[str],
-    period: str = "10y",
-    interval: str = "1d",
-    filename: str = "copper_data_ohlcv_full.csv",
-) -> pd.DataFrame:
-    """
-    Downloads and exports a complete OHLCV dataset in 'Wide' format.
+    # Identify which FX rates we need to download based on the suffixes
+    fx_tickers = set()
+    for t in unique_assets:
+        for suffix, (fx, _, _) in FX_MAPPING.items():
+            if t.endswith(suffix) and fx is not None:
+                fx_tickers.add(fx)
     
-    Args:
-        tickers: List of assets to download.
-        period: Time range.
-        interval: Data resolution.
-        filename: Destination CSV path.
-        
-    Returns:
-        pd.DataFrame: The processed OHLCV DataFrame.
+    return unique_assets, list(fx_tickers)
+
+
+def process_ohlcv_to_usd(df_ohlcv: pd.DataFrame, df_fx: pd.DataFrame) -> pd.DataFrame:
     """
-    print(f"\n[DATA] Downloading OHLCV data for {len(tickers)} tickers...")
-    data = _download_ohlcv_yfinance(tickers=tickers, period=period, interval=interval)
+    Converts Open, High, Low, Close, and Adj Close columns to USD.
+    Volume remains unchanged.
+    """
+    # Align dates across all datasets
+    common_index = df_ohlcv.index.intersection(df_fx.index)
+    df_ohlcv = df_ohlcv.loc[common_index].copy()
+    df_fx_aligned = df_fx.loc[common_index].ffill() 
 
-    if not isinstance(data.columns, pd.MultiIndex):
-        # Single ticker case
-        t = tickers[0]
-        df_ohlcv = pd.DataFrame(index=data.index)
-        for f in ["Open", "High", "Low", "Close", "Volume"]:
-            df_ohlcv[f"{t}_{f}"] = data[f]
-    else:
-        # Multi-ticker case: flatten MultiIndex to 'Ticker_Field' format
-        fields = ["Open", "High", "Low", "Close", "Volume"]
-        pieces = []
-        for f in fields:
-            tmp = data[f].copy()
-            tmp.columns = [f"{c}_{f}" for c in tmp.columns]
-            pieces.append(tmp)
-        df_ohlcv = pd.concat(pieces, axis=1).sort_index()
+    tickers = df_ohlcv.columns.levels[0]
+    print("[PROCESSING] Normalizing all assets to USD base...")
 
-    df_ohlcv = df_ohlcv.replace([np.inf, -np.inf], np.nan).sort_index()
-    df_ohlcv.to_csv(filename)
-    print(f"[DATA] Full OHLCV dataset saved: {filename}")
+    for ticker in tickers:
+        fx_ticker, op, unit_adj = None, None, 1.0
+        match_found = False
+        
+        # Determine conversion rule
+        for suffix, (fx, operation, adj) in FX_MAPPING.items():
+            if ticker.endswith(suffix):
+                fx_ticker, op, unit_adj = fx, operation, adj
+                match_found = True
+                break
+        
+        if not match_found or fx_ticker is None:
+            continue
+            
+        if fx_ticker not in df_fx_aligned.columns:
+            warnings.warn(f"FX Rate {fx_ticker} missing for {ticker}. Skipping conversion.")
+            continue
+
+        rate = df_fx_aligned[fx_ticker]
+        price_fields = ['Open', 'High', 'Low', 'Close', 'Adj Close']
+        
+        for field in price_fields:
+            if (ticker, field) in df_ohlcv.columns:
+                series = df_ohlcv[(ticker, field)]
+                
+                # Apply unit adjustment (e.g., Pence to Pounds) and then FX rate
+                if op == "div":
+                    df_ohlcv[(ticker, field)] = (series * unit_adj) / rate
+                elif op == "mul":
+                    df_ohlcv[(ticker, field)] = (series * unit_adj) * rate
+
     return df_ohlcv
 
-def build_and_save_close_dataset(
-    tickers: List[str],
+
+def build_unified_dataset(
     period: str = "10y",
-    interval: str = "1d",
-    filename: str = "close.csv",
-) -> pd.DataFrame:
-    """
-    Extracts and saves raw 'Close' prices. 
-    Designed for UI applications (e.g., PyQt6) requiring unnormalized values.
-    """
-    print(f"\n[DATA] Extracting raw Closing prices...")
-    data = _download_ohlcv_yfinance(tickers=tickers, period=period, interval=interval)
-
-    if isinstance(data.columns, pd.MultiIndex):
-        df_close = data["Close"].copy()
-    else:
-        t = tickers[0]
-        df_close = pd.DataFrame({t: data["Close"]})
-
-    # Cleaning: Forward/Backward fill gaps in trading dates
-    df_close = df_close.dropna(axis=1, how="all").ffill().bfill()
-    df_close = df_close.reindex(columns=sorted(df_close.columns))
-
-    df_close.to_csv(filename)
-    print(f"[DATA] 'Close' dataset saved: {os.path.abspath(filename)}")
-    return df_close
-
-def build_and_save_clean_dataset(
-    tickers: List[str],
-    period: str = "10y",
-    interval: str = "1d",
-    filename: str = "copper_data_clean.csv",
-    corr_out_png: str = "copper_universe_correlation_heatmap.png",
-    corr_out_csv: str = "copper_universe_correlation_matrix.csv",
-    perf_out_png: str = "copper_analysis.png",
-) -> pd.DataFrame:
-    """
-    Constructs a 'Clean' dataset with Base-100 normalization and Winsorization.
-    Performs visual analysis (correlation heatmap and performance charts).
-    """
-    data = _download_ohlcv_yfinance(tickers=tickers, period=period, interval=interval)
-
-    if isinstance(data.columns, pd.MultiIndex):
-        df_close = data["Close"].copy()
-    else:
-        t = tickers[0]
-        df_close = pd.DataFrame({t: data["Close"]})
-
-    df_close = df_close.dropna(axis=1, how="all").ffill().bfill()
-
-    # Generate Visualizations
-    plot_universe_correlation_heatmap(df_close, corr_out_png, corr_out_csv)
+    out_ohlc: str = "copper_prices_ohlc_usd.csv",
+    out_close: str = "copper_prices_close_usd.csv",
+    out_returns: str = "copper_returns_clean.csv"
+):
+    """Main pipeline to download, process, and save the datasets."""
+    print(f"[INIT] Building dataset for period: {period}")
     
-    # Base-100 Performance Plot (using Adjusted Close if available)
-    df_adj = data["Adj Close"].copy().ffill().bfill() if "Adj Close" in data.columns else df_close
-    plot_normalized_base100_performance(df_adj, perf_out_png)
-
-    # Return Winsorization (Managing Outliers at 1% and 99% quantiles)
-    returns = df_close.pct_change()
-    returns_cleaned = returns.clip(lower=returns.quantile(0.01), upper=returns.quantile(0.99), axis=1)
-
-    # Reconstruct Base-100 Normalized Index
-    df_clean_norm = (1.0 + returns_cleaned.fillna(0.0)).cumprod() * 100.0
-    df_clean_norm.to_csv(filename)
-    print(f"[DATA] Clean (Base-100) dataset saved: {filename}")
-    return df_clean_norm
-
-# =============================================================================
-# 2) ANALYSIS AND VISUALIZATION
-# =============================================================================
-
-def plot_universe_correlation_heatmap(df, out_png, out_csv, title="Correlation Matrix"):
-    """Generates and saves a heatmap of asset return correlations."""
-    rets = df.pct_change().dropna(how="all")
-    corr = rets.corr()
-    corr.to_csv(out_csv)
-
-    plt.figure(figsize=(14, 10))
-    sns.heatmap(corr, cmap="coolwarm", center=0.0, vmin=-1.0, vmax=1.0, annot=True, fmt=".2f", annot_kws={"size": 8})
-    plt.title(title)
-    plt.tight_layout()
-    plt.savefig(out_png, dpi=180)
-    plt.close()
-
-def plot_normalized_base100_performance(df, out_png, title="Base-100 Performance", max_final_index=800.0):
-    """Plots normalized growth of assets, highlighting the Copper Futures anchor."""
-    df_norm = (df.divide(df.iloc[0].replace(0.0, np.nan), axis=1)) * 100.0
+    # 1. Data Acquisition
+    assets, fx_tickers = get_copper_heavy_universe()
     
-    # Filter out extreme outliers/anomalies for chart readability
-    keep_cols = [c for c in df_norm.columns if c == "HG=F" or (df_norm[c].iloc[-1] <= max_final_index)]
-    df_norm = df_norm[keep_cols]
+    print(f" -> Downloading {len(assets)} Assets (OHLCV)...")
+    data_assets = yf.download(
+        assets, period=period, interval="1d", 
+        auto_adjust=False, group_by="ticker", progress=False
+    )
+    
+    print(f" -> Downloading {len(fx_tickers)} FX Rates...")
+    data_fx = yf.download(
+        fx_tickers, period=period, interval="1d", 
+        auto_adjust=False, progress=False
+    )["Adj Close"]
+    
+    # 2. Currency Normalization
+    df_full_usd = process_ohlcv_to_usd(data_assets, data_fx)
+    
+    # 3. Data Cleaning (Alignment & Handling Missing Days)
+    # Filter for rows where at least 50% of assets have valid data
+    adj_close_cols = [c for c in df_full_usd.columns if c[1] == 'Adj Close']
+    valid_rows = df_full_usd[adj_close_cols].dropna(thresh=int(len(adj_close_cols) * 0.5)).index
+    
+    # Finalize dataset with forward fill for minor gaps (holidays)
+    df_full_usd = df_full_usd.loc[valid_rows].ffill().dropna()
+    print(f"[DATA] Final cleaned shape: {df_full_usd.shape}")
 
-    plt.figure(figsize=(12, 6))
+    # 4. EXPORT: Full OHLC (for backtesting)
+    df_ohlc_export = df_full_usd.copy()
+    df_ohlc_export.columns = [f"{t}_{f}" for t, f in df_ohlc_export.columns]
+    df_ohlc_export.to_csv(out_ohlc)
+
+    # 5. EXPORT: Adjusted Close Only (for correlation/analysis)
+    df_close_export = df_full_usd.xs('Adj Close', level=1, axis=1).copy()
+    df_close_export.to_csv(out_close)
+
+    # 6. EXPORT: Cleaned Returns
+    # Use expanding window for Winsorization to prevent look-ahead bias
+    rets = df_close_export.pct_change()
+    lower = rets.expanding(min_periods=252).quantile(0.01)
+    upper = rets.expanding(min_periods=252).quantile(0.99)
+    rets_clean = rets.clip(lower=lower, upper=upper, axis=1).dropna()
+    rets_clean.to_csv(out_returns)
+
+    print(f"[SUCCESS] Exports completed: {out_ohlc}, {out_close}, {out_returns}")
+
+    # Visual Quality Check
+    plot_check(df_close_export, "copper_data_integrity.png")
+
+
+def plot_check(df_close: pd.DataFrame, filename: str):
+    """Generates a normalized price chart to verify data consistency."""
+    df_norm = (df_close / df_close.iloc[0]) * 100
+    plt.figure(figsize=(12, 7))
+    
     for col in df_norm.columns:
-        # Highlight HG=F (Copper Futures) with a thicker black line
-        alpha, lw = (1.0, 2.6) if col == "HG=F" else (0.6, 0.9)
-        color = "black" if col == "HG=F" else None
-        plt.plot(df_norm.index, df_norm[col], linewidth=lw, alpha=alpha, color=color, label=col if col=="HG=F" else "")
-    
-    plt.title(title)
+        is_copper = "HG=F" in col
+        plt.plot(
+            df_norm.index, df_norm[col], 
+            label=col if is_copper else "", 
+            linewidth=2.5 if is_copper else 1.0, 
+            alpha=1.0 if is_copper else 0.4,
+            color="chocolate" if is_copper else None
+        )
+        
+    plt.title("Asset Integrity Check (USD Base 100 Normalized)")
+    plt.ylabel("Relative Growth")
     plt.legend()
     plt.grid(True, alpha=0.3)
-    plt.savefig(out_png, dpi=180)
+    plt.tight_layout()
+    plt.savefig(filename)
     plt.close()
 
-# =============================================================================
-# 3) CLI AND MAIN EXECUTION
-# =============================================================================
-
-def main() -> None:
-    """Main execution entry point."""
-    warnings.filterwarnings("ignore")
-    parser = argparse.ArgumentParser(description="Copper Market Data Engineering Pipeline.")
-    parser.add_argument("--period", type=str, default="10y", help="Lookback period (e.g., 5y, 10y, max)")
-    parser.add_argument("--out_full", type=str, default="copper_data_ohlcv_full.csv", help="Full OHLCV filename")
-    parser.add_argument("--out_clean", type=str, default="copper_data_clean.csv", help="Normalized dataset filename")
-    parser.add_argument("--out_close", type=str, default="close.csv", help="Raw Close price filename")
-    args = parser.parse_args()
-
-    tickers = get_copper_heavy_universe()
-
-    # Phase 1: Full OHLCV Dataset
-    build_and_save_ohlcv_full_dataset(tickers, args.period, "1d", args.out_full)
-
-    # Phase 2: Raw Close Prices (for GUI applications)
-    build_and_save_close_dataset(tickers, args.period, "1d", args.out_close)
-
-    # Phase 3: Clean Normalized Dataset (Base-100 + Winsorization)
-    build_and_save_clean_dataset(tickers, args.period, "1d", args.out_clean)
-
-    print("\n[SUCCESS] Pipeline execution complete.")
 
 if __name__ == "__main__":
-    main()
+    build_unified_dataset()
