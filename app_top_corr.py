@@ -426,7 +426,7 @@ class BacktestWorker(QThread):
                 else:
                     # Optionnel : On peut quand même l'ajouter pour test, 
                     # mais la rigueur voudrait qu'on ne garde que les p < 0.05
-        print(f"Paire écartée : Non cointégrée sur la période Train uniquement.")
+                    print(f"Paire écartée : Non cointégrée sur la période Train uniquement.")
             if not pairs:
                 self.error_signal.emit("No cointegrated pairs found in training data. Try different assets or adjust thresholds.")
                 return
