@@ -1,3 +1,17 @@
+"""
+Statistical Arbitrage & Pairs Trading Backtesting Framework
+-----------------------------------------------------------
+A comprehensive PyQt6-based graphical application for identifying, 
+backtesting, and optimizing cointegrated asset pairs.
+
+Features include:
+- Walk-forward analysis
+- Dynamic hedging via Rolling OLS
+- Risk parity portfolio allocation
+- Stop-loss cooldown mechanisms
+- Grid search parameter optimization
+"""
+
 import sys
 import os
 import json
@@ -78,6 +92,9 @@ QTabBar::tab:selected { background: #1e1e1e; color: white; border-top: 2px solid
 
 # --- DATA DOWNLOAD DIALOG ---
 class YFinanceDialog(QDialog):
+    """
+    Dialog window for fetching historical market data via Yahoo Finance.
+    """
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Download Market Data")
@@ -97,21 +114,32 @@ class YFinanceDialog(QDialog):
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)
 
-    def get_data(self):
+    def get_data(self) -> Tuple[List[str], str]:
+        """Returns the parsed list of tickers and the start date."""
         tickers = [t.strip() for t in self.txt_tickers.text().split(',')]
         start = self.txt_start.text()
         return tickers, start
 
-# --- CORE TRADING ENGINE (FIXED) ---
+# --- CORE TRADING ENGINE ---
 class TradingStrategy:
+    """
+    Core engine responsible for data management, statistical analysis,
+    cointegration testing, and historical backtesting.
+    """
     def __init__(self):
         self.df: Optional[pd.DataFrame] = None
         self.assets: List[str] = []
         self.train_data: Optional[pd.DataFrame] = None
         self.test_data: Optional[pd.DataFrame] = None
 
-    def fetch_yfinance(self, tickers: List[str], start_date: str):
-        """Downloads historical data using YFinance."""
+    def fetch_yfinance(self, tickers: List[str], start_date: str) -> None:
+        """
+        Downloads historical closing prices using yfinance.
+        
+        Args:
+            tickers: List of ticker symbols.
+            start_date: Start date string in 'YYYY-MM-DD' format.
+        """
         print(f"Downloading {tickers} from {start_date}...")
         try:
             data = yf.download(tickers, start=start_date, progress=False)['Close']
@@ -122,8 +150,13 @@ class TradingStrategy:
         except Exception as e:
             raise ValueError(f"Data Download Error: {e}")
 
-    def load_csv(self, filepath: str):
-        """Loads data from a local CSV file."""
+    def load_csv(self, filepath: str) -> None:
+        """
+        Loads time-series data from a local CSV file.
+        
+        Args:
+            filepath: Absolute or relative path to the CSV file.
+        """
         try:
             self.df = pd.read_csv(filepath, index_col=0, parse_dates=True)
             self.df = self.df.apply(pd.to_numeric, errors='coerce').dropna()
@@ -131,10 +164,13 @@ class TradingStrategy:
         except Exception as e:
             raise ValueError(f"CSV Load Error: {e}")
 
-    def split_data(self, train_pct: float = 0.2):
+    def split_data(self, train_pct: float = 0.2) -> None:
         """
-        Split data into train/test to avoid look-ahead bias.
-        Cointegration will be tested ONLY on training data.
+        Splits the dataset sequentially into training and testing sets
+        to prevent look-ahead bias during parameter selection.
+        
+        Args:
+            train_pct: Percentage of data to allocate for training.
         """
         if self.df is None or self.df.empty:
             raise ValueError("No data loaded. Please load data first.")
@@ -146,9 +182,18 @@ class TradingStrategy:
         print(f"Train: {self.train_data.index[0]} to {self.train_data.index[-1]} ({len(self.train_data)} days)")
         print(f"Test:  {self.test_data.index[0]} to {self.test_data.index[-1]} ({len(self.test_data)} days)")
 
-    def find_cointegrated_pairs(self, data: pd.DataFrame, corr_threshold: float = 0.85, pvalue_threshold: float = 0.05):
+    def find_cointegrated_pairs(self, data: pd.DataFrame, corr_threshold: float = 0.85, pvalue_threshold: float = 0.05) -> List[Tuple[str, str]]:
         """
-        Scan de cointégration robuste.
+        Scans the provided dataset for cointegrated pairs using Pearson correlation 
+        followed by Augmented Dickey-Fuller (ADF) testing on the regression residuals.
+        
+        Args:
+            data: Time-series price dataframe.
+            corr_threshold: Minimum correlation required to run the ADF test.
+            pvalue_threshold: Maximum p-value to reject the null hypothesis.
+            
+        Returns:
+            List of valid cointegrated pairs as (Asset1, Asset2) tuples.
         """
         numeric_df = data.select_dtypes(include=[np.number])
         log_df = np.log(numeric_df).replace([np.inf, -np.inf], np.nan).dropna(axis=1)
@@ -162,16 +207,16 @@ class TradingStrategy:
             for j in range(i + 1, n):
                 s1, s2 = assets[i], assets[j]
                 
-                # correlation filter
+                # Pre-filter by correlation to save computation
                 if corr.loc[s1, s2] < corr_threshold:
                     continue
                 
                 try:
-                    # linear regression
+                    # OLS Linear Regression
                     res = linregress(log_df[s2], log_df[s1])
                     spread = log_df[s1] - (res.slope * log_df[s2] + res.intercept)
                     
-                  
+                    # ADF Test on the spread
                     adf_stats = adfuller(spread.dropna())
                     pvalue = adf_stats[1] 
                     
@@ -181,10 +226,18 @@ class TradingStrategy:
                     continue
         
         return pairs
-    def run_monte_carlo(self, returns_series: pd.Series, simulations: int = 50):
+
+    def run_monte_carlo(self, returns_series: pd.Series, simulations: int = 50) -> List[np.ndarray]:
         """
-        Monte Carlo now properly aligned and uses only realized returns.
-        No future data leakage.
+        Executes Monte Carlo simulations using bootstrap resampling with replacement 
+        to estimate potential equity curve variance.
+        
+        Args:
+            returns_series: Series of daily portfolio returns.
+            simulations: Number of simulation paths to generate.
+            
+        Returns:
+            List of cumulative return arrays.
         """
         sim_results = []
         daily_rets = returns_series.dropna().values
@@ -195,30 +248,37 @@ class TradingStrategy:
         horizon = len(daily_rets)
 
         for _ in range(simulations):
-            # Bootstrap resampling with replacement
             shuffled_rets = np.random.choice(daily_rets, size=horizon, replace=True)
-            
-            # Reconstruct equity curve (base 1.0)
             cum_ret_sim = np.cumprod(1 + shuffled_rets)
             sim_results.append(cum_ret_sim)
         
         return sim_results
 
-    def backtest_pair(self, s1, s2, data: pd.DataFrame, params: dict):
+    def backtest_pair(self, s1: str, s2: str, data: pd.DataFrame, params: dict) -> Tuple[pd.Series, pd.Series, pd.Series, int, int]:
         """
-        Improved position management and cost calculation.
-        Properly tracks actual trades (not just position changes).
-        Implements cooldown period after stop loss hits.
+        Simulates the pairs trading strategy for a single asset pair.
+        Implements dynamic hedging (Rolling OLS) and strict position management 
+        including stop-loss functionality and cooldown periods.
+        
+        Args:
+            s1: Ticker symbol for asset 1.
+            s2: Ticker symbol for asset 2.
+            data: DataFrame containing price series.
+            params: Dictionary of strategy parameters.
+            
+        Returns:
+            Tuple containing: net PnL series, z-score series, position series, 
+            total trades executed, and number of stop-losses hit.
         """
         # 1. Prepare Data
         log_df = np.log(data[[s1, s2]])
         y, x = log_df[s1], sm.add_constant(log_df[s2])
 
-        # 2. Rolling OLS (Hedge Ratio) with proper lag
-        # Add 2-day lag to ensure no look-ahead
+        # 2. Rolling OLS (Hedge Ratio) with look-ahead prevention
+        # A 2-day shift is applied to ensure trading logic relies strictly on historical data
         model = RollingOLS(y, x, window=params['beta_window'])
         rolling_res = model.fit()
-        res_params = rolling_res.params.shift(2)  # 2-day lag
+        res_params = rolling_res.params.shift(2)
         beta = res_params[s2].fillna(method='ffill')
         alpha = res_params['const'].fillna(method='ffill')
 
@@ -227,19 +287,18 @@ class TradingStrategy:
         roll_mean = spread.rolling(window=params['z_window']).mean()
         roll_std = spread.rolling(window=params['z_window']).std()
         
-        # Avoid division by zero
         roll_std = roll_std.replace(0, np.nan)
         z_score = (spread - roll_mean) / roll_std
 
-        # 4. Generate Entry Signals
+        # 4. Generate Signal Arrays
         entry_long = z_score < -params['entry_z']
         entry_short = z_score > params['entry_z']
         
-        # 5. FIX: Improved Position Management with Cooldown
+        # 5. Position Management & Event Handling
         positions = pd.Series(0, index=z_score.index)
         current_pos = 0
-        cooldown_end_idx = -1  # Index until which trading is disabled
-        stop_loss_count = 0  # Track number of stop losses hit
+        cooldown_end_idx = -1 
+        stop_loss_count = 0 
         
         enable_cooldown = params.get('enable_cooldown', False)
         cooldown_days = params.get('cooldown_days', 20)
@@ -251,14 +310,13 @@ class TradingStrategy:
             
             z = z_score.iloc[i]
             
-            # Check if we're still in cooldown period
+            # Cooldown check
             if enable_cooldown and i <= cooldown_end_idx:
-                # Force close any existing position and prevent new trades
                 current_pos = 0
                 positions.iloc[i] = 0
                 continue
             
-            # Entry logic (only if not in position and not in cooldown)
+            # Entry logic
             if current_pos == 0:
                 if entry_long.iloc[i]:
                     current_pos = 1
@@ -271,50 +329,49 @@ class TradingStrategy:
             elif current_pos == -1 and z < params['exit_z']:
                 current_pos = 0
             
-            # Stop Loss with Cooldown Trigger
+            # Stop Loss logic
             if abs(z) > params['stop_loss_z'] and current_pos != 0:
-                current_pos = 0  # Close position immediately
+                current_pos = 0
                 stop_loss_count += 1
                 
-                # Activate cooldown period
                 if enable_cooldown:
                     cooldown_end_idx = i + cooldown_days
-                    # Note: cooldown_end_idx might exceed array length, that's OK
             
             positions.iloc[i] = current_pos
 
-        # 6. Calculate PnL
+        # 6. Returns & PnL Calculation
         pos_delayed = positions.shift(1).fillna(0)
         ret1 = data[s1].pct_change()
         ret2 = data[s2].pct_change()
         
-        # Hedge ratio for returns
         beta_aligned = beta.reindex(ret1.index).fillna(method='ffill')
         spread_ret = ret1 - beta_aligned * ret2
-        
         pnl = pos_delayed * spread_ret
         
-        # 7. Cost Calculation
-        # Count actual trades (position changes from 0 to ±1 or vice versa)
+        # 7. Transaction Cost Accounting
         pos_changes = positions.diff().fillna(0)
         actual_trades = (pos_changes != 0).astype(int)
         total_trades = actual_trades.sum()
         
-        # Apply costs when position changes (entry OR exit)
         total_cost = params['tx_cost'] + params['slippage']
-        
-        # Costs are applied whenever there's a trade (position change)
-        # We use the CURRENT position size (not delayed) to calculate the notional traded
         costs = actual_trades * total_cost
-        
         net_pnl = pnl - costs
         
         return net_pnl.fillna(0), z_score, positions, total_trades, stop_loss_count
 
     def backtest_portfolio(self, pairs: List[Tuple[str, str]], data: pd.DataFrame, params: dict):
         """
-        FIX #5: Portfolio construction with proper risk parity.
-        NEW: Tracks stop loss events per pair.
+        Aggregates individual pair strategies into a unified portfolio, applying
+        risk-parity weighting if configured.
+        
+        Args:
+            pairs: List of valid pair tuples.
+            data: Price data dataframe.
+            params: Dictionary of trading constraints and parameters.
+            
+        Returns:
+            Tuple of portfolio-level cumulative returns, pair-specific metrics dictionary,
+            portfolio return series, total trades, and total stop-losses hit.
         """
         all_pnls = pd.DataFrame(index=data.index)
         pair_data = {}
@@ -345,12 +402,11 @@ class TradingStrategy:
         final_pnls = all_pnls.fillna(0)
         
         if params.get('risk_parity', True):
-            # Use configurable volatility window
             vol_window = params.get('risk_parity_window', 60)
             inv_vol = 1.0 / final_pnls.rolling(vol_window).std().shift(1).replace(0, np.nan)
             weights = inv_vol.div(inv_vol.sum(axis=1), axis=0).fillna(0)
             
-            # Cap maximum weight to avoid concentration
+            # Capping maximum exposure per pair to avoid over-concentration
             max_weight = params.get('max_pair_weight', 0.3)
             weights = weights.clip(upper=max_weight)
             weights = weights.div(weights.sum(axis=1), axis=0).fillna(0)
@@ -365,11 +421,15 @@ class TradingStrategy:
 
 # --- WORKER THREAD (BACKGROUND TASKS) ---
 class BacktestWorker(QThread):
+    """
+    Background worker thread to handle intensive backtesting and 
+    prevent the main GUI loop from freezing.
+    """
     progress_signal = pyqtSignal(int)
     result_signal = pyqtSignal(object, object, object, object, object, object)
     error_signal = pyqtSignal(str)
 
-    def __init__(self, strategy, params, use_walk_forward):
+    def __init__(self, strategy: TradingStrategy, params: dict, use_walk_forward: bool):
         super().__init__()
         self.strategy = strategy
         self.params = params
@@ -378,43 +438,36 @@ class BacktestWorker(QThread):
     def run(self):
         try:
             self.strategy.split_data(train_pct=0.2)
-            
             self.progress_signal.emit(10)
-            pairs = self.strategy.find_cointegrated_pairs(
-                self.strategy.train_data,
-                corr_threshold=0.85,
-                pvalue_threshold=0.05
-            )
-
-            # 1. Cointegration Scan (against HG=F)
+            
+            # Base Cointegration Scan Target
             target = "HG=F"
             if target not in self.strategy.assets:
-                self.error_signal.emit(f"Le ticker {target} est absent des données.")
+                self.error_signal.emit(f"Target ticker {target} is missing from the dataset.")
                 return
             
-                        # 1. Utiliser UNIQUEMENT les données d'entraînement pour la sélection
+            # 1. Use ONLY training data for selection to prevent look-ahead bias
             train_df = self.strategy.train_data
             log_train_df = np.log(train_df).replace([np.inf, -np.inf], np.nan).dropna(axis=1)
             
-            # 2. Calculer la corrélation sur le passé uniquement
-            # On ne regarde pas 'self.strategy.df' ici pour éviter le Selection Bias
+            # 2. Calculate correlation on historical data strictly
             corr_train = train_df.corr()
             
             if target not in train_df.columns:
-                self.error_signal.emit(f"Le ticker {target} est absent des données d'entraînement.")
+                self.error_signal.emit(f"Target ticker {target} is missing from the training data.")
                 return
             
-            # 3. Identifier les candidats basés sur le passé
+            # 3. Identify candidates based on historical correlation
             correlations_with_target = corr_train[target].drop(labels=[target]).sort_values(ascending=False)
             
-            # Prendre les n actifs les plus corrélés DURANT la période de train
+            # Select the top N most correlated assets DURING the training period
             n = 8
             top_n_tickers = correlations_with_target.head(n).index.tolist()
             pairs = []
             
             for s2 in top_n_tickers:
-                s1 = target # HG=F
-                # Régression et ADF effectués strictement sur train_df
+                s1 = target 
+                # Regression and ADF test strictly performed on training data
                 res = linregress(log_train_df[s2], log_train_df[s1])
                 spread_train = log_train_df[s1] - (res.slope * log_train_df[s2] + res.intercept)
                 
@@ -422,11 +475,10 @@ class BacktestWorker(QThread):
                 
                 if p_val < 0.05: 
                     pairs.append((s1, s2))
-                    print(f"Paire validée sur Train: {s1}-{s2} (p-val: {p_val:.4f})")
+                    print(f"Pair validated on Train: {s1}-{s2} (p-val: {p_val:.4f})")
                 else:
-                    # Optionnel : On peut quand même l'ajouter pour test, 
-                    # mais la rigueur voudrait qu'on ne garde que les p < 0.05
-                    print(f"Paire écartée : Non cointégrée sur la période Train uniquement.")
+                    print(f"Pair rejected: Not cointegrated on the Train period only.")
+                    
             if not pairs:
                 self.error_signal.emit("No cointegrated pairs found in training data. Try different assets or adjust thresholds.")
                 return
@@ -434,7 +486,7 @@ class BacktestWorker(QThread):
             print(f"Found {len(pairs)} cointegrated pairs: {pairs}")
             
             if self.use_walk_forward:
-                # Walk-Forward Analysis
+                # Walk-Forward Analysis Phase
                 self.progress_signal.emit(30)
                 train_result = self.strategy.backtest_portfolio(
                     pairs, self.strategy.train_data, self.params
@@ -446,35 +498,28 @@ class BacktestWorker(QThread):
                 )
                 
                 if train_result[0] is None or test_result[0] is None:
-                    self.error_signal.emit("Backtest failed on train or test data.")
+                    self.error_signal.emit("Backtest failed on train or test data subset.")
                     return
                 
-                # Combine results
+                # Combine training and out-of-sample results
                 cum_ret_train, pair_data_train, port_ret_train, trades_train, sl_train = train_result
                 cum_ret_test, pair_data_test, port_ret_test, trades_test, sl_test = test_result
                 
-                # Test period should continue from where train ended, not restart at 1.0
+                # Ensure the test period continues sequentially from the train endpoint
                 train_final_value = cum_ret_train.iloc[-1]
-                
-                # Scale test returns to continue from train's final value
-                # Convert test cum_ret back to simple returns, then rebuild from train endpoint
                 test_simple_returns = cum_ret_test.pct_change().fillna(0)
                 cum_ret_test_chained = train_final_value * (1 + test_simple_returns).cumprod()
                 
-                # Now concatenate
                 cum_ret = pd.concat([cum_ret_train, cum_ret_test_chained])
                 port_ret = pd.concat([port_ret_train, port_ret_test])
                 
-                # Merge pair data (use test performance for metrics)
                 pair_data = pair_data_test
                 total_trades = trades_train + trades_test
                 total_stop_losses = sl_train + sl_test
-                
-                # Mark split point
                 split_date = self.strategy.test_data.index[0]
                 
             else:
-                # Standard backtest on full data
+                # Standard Full-Data Backtest
                 self.progress_signal.emit(50)
                 result = self.strategy.backtest_portfolio(
                     pairs, self.strategy.df, self.params
@@ -489,16 +534,11 @@ class BacktestWorker(QThread):
             
             self.progress_signal.emit(90)
             
-            # Monte Carlo simulations
             mc_sims = self.strategy.run_monte_carlo(port_ret, simulations=50)
-            
-            # Calculate metrics
             total_return = cum_ret.iloc[-1] - 1.0
             
             if total_trades > 0:
-                # Calculate total costs paid across all pairs
                 total_costs_paid = total_trades * (self.params.get('tx_cost', 0) + self.params.get('slippage', 0))
-                
                 avg_cost_per_trade = total_costs_paid / total_trades
                 avg_trade_ret = total_return / total_trades
             else:
@@ -521,20 +561,24 @@ class BacktestWorker(QThread):
             self.error_signal.emit(f"{str(e)}\n\n{traceback.format_exc()}")
 
 class OptimizerWorker(QThread):
+    """
+    Background worker thread to perform grid-search optimization 
+    across strategy parameters.
+    """
     progress_signal = pyqtSignal(int)
     log_signal = pyqtSignal(str)
     result_signal = pyqtSignal(dict, float, dict)
     finished_signal = pyqtSignal()
 
-    def __init__(self, strategy, grid, metric_type, fixed_costs):
+    def __init__(self, strategy: TradingStrategy, grid: dict, metric_type: str, fixed_costs: dict):
         super().__init__()
         self.strategy = strategy
         self.grid = grid
         self.metric_type = metric_type
         self.costs = fixed_costs
 
-    def calculate_metric(self, port_ret):
-        """Helper to calculate specific metrics from portfolio returns."""
+    def calculate_metric(self, port_ret: pd.Series) -> float:
+        """Computes the target optimization metric from the portfolio returns."""
         if port_ret.empty or port_ret.std() == 0:
             return -999.0
         
@@ -554,15 +598,13 @@ class OptimizerWorker(QThread):
         elif self.metric_type == "Minimize Max Drawdown":
             cum_ret = (1 + port_ret).cumprod()
             dd = (cum_ret / cum_ret.cummax()) - 1
-            return -dd.min()  # we want to minimize
+            return -dd.min() 
             
         return -999.0
 
     def run(self):
-        # Optimize only on training data
         self.strategy.split_data(train_pct=0.2)
         
-        # Find pairs on training data
         pairs = self.strategy.find_cointegrated_pairs(
             self.strategy.train_data,
             corr_threshold=0.85,
@@ -575,7 +617,6 @@ class OptimizerWorker(QThread):
             self.finished_signal.emit()
             return
         
-        # Generate combinations
         keys = list(self.grid.keys())
         combinations = list(product(*self.grid.values()))
         total_combos = len(combinations)
@@ -592,7 +633,7 @@ class OptimizerWorker(QThread):
             current_params['max_pair_weight'] = 0.3
 
             try:
-                # Backtest on TRAINING data only
+                # Strictly evaluate parameters on training data to prevent overfitting
                 result = self.strategy.backtest_portfolio(
                     pairs, self.strategy.train_data, current_params
                 )
@@ -600,7 +641,7 @@ class OptimizerWorker(QThread):
                 if result[0] is None:
                     score = -999.0
                 else:
-                    _, _, port_ret, _, _ = result  # Unpack with stop losses
+                    _, _, port_ret, _, _ = result 
                     score = self.calculate_metric(port_ret)
                 
                 all_results[str(current_params)] = score
@@ -610,7 +651,7 @@ class OptimizerWorker(QThread):
                     best_params = current_params.copy()
                     self.log_signal.emit(f"New Best: {score:.4f} | Params: {current_params}")
 
-            except Exception as e:
+            except Exception:
                 pass
 
             self.progress_signal.emit(int((i + 1) / total_combos * 100))
@@ -620,9 +661,13 @@ class OptimizerWorker(QThread):
 
 # --- MAIN APPLICATION WINDOW ---
 class MainWindow(QMainWindow):
+    """
+    Main Graphical User Interface (GUI) instance defining layout, 
+    user interactions, and visualization components.
+    """
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Statistical Arbitrage App (Fixed)")
+        self.setWindowTitle("Statistical Arbitrage Engine")
         self.resize(1600, 900)
         self.setStyleSheet(DARK_THEME_QSS)
         
@@ -688,18 +733,17 @@ class MainWindow(QMainWindow):
         self.spin_stop.setSingleStep(0.1)
         self.layout_controls.addRow("Stop Loss:", self.spin_stop)
         
-        # Cooldown after stop loss
+        # Stop Loss Cooldown Section
         self.layout_controls.addRow(QLabel("--- Stop Loss Cooldown ---"))
-        
         self.chk_enable_cooldown = QCheckBox("Enable Cooldown After Stop Loss")
         self.chk_enable_cooldown.setChecked(False)
-        self.chk_enable_cooldown.setToolTip("Temporarily disable trading on a pair after stop loss is hit")
+        self.chk_enable_cooldown.setToolTip("Temporarily disable trading on a pair after a stop loss event")
         self.layout_controls.addRow(self.chk_enable_cooldown)
         
         self.spin_cooldown_days = QSpinBox()
         self.spin_cooldown_days.setRange(1, 1000)
         self.spin_cooldown_days.setValue(20)
-        self.spin_cooldown_days.setToolTip("Number of days to stop trading this pair after stop loss")
+        self.spin_cooldown_days.setToolTip("Number of days to block trading on the affected pair")
         self.layout_controls.addRow("Cooldown Duration (Days):", self.spin_cooldown_days)
         
         self.layout_controls.addRow(QLabel("--- Execution Costs ---"))
@@ -769,7 +813,7 @@ class MainWindow(QMainWindow):
         self.lbl_sortino = QLabel("Sortino: N/A")
         self.lbl_cagr = QLabel("CAGR: N/A")
         self.lbl_maxdd = QLabel("Max DD: N/A")
-        self.lbl_trades = QLabel("Nb Trades: N/A")
+        self.lbl_trades = QLabel("Total Trades: N/A")
         self.lbl_avg_ret = QLabel("Avg Ret/Trade: N/A")
         self.lbl_avg_cost = QLabel("Avg Cost/Trade: N/A")
         self.lbl_pairs_found = QLabel("Pairs Found: N/A")
@@ -801,7 +845,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.tab_charts)
 
     def reset_ui(self):
-        """Clears all charts and tables."""
+        """Resets the user interface and clears old plotting data."""
         self.table.setRowCount(0)
         
         self.fig_equity.clear()
@@ -823,6 +867,7 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
 
     def run_backtest(self):
+        """Initializes and triggers the backtesting worker thread."""
         if self.strategy.df is None:
             QMessageBox.warning(self, "No Data", "Please load data first (CSV or Yahoo Finance)")
             return
@@ -862,6 +907,7 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
     def run_optimization(self):
+        """Triggers the hyperparameter optimization worker sequence."""
         if self.strategy.df is None:
             QMessageBox.warning(self, "No Data", "Please load data first")
             return
@@ -908,24 +954,22 @@ class MainWindow(QMainWindow):
         self.opt_worker.finished_signal.connect(lambda: self.btn_run.setEnabled(True))
         self.opt_worker.start()
 
-    def apply_best_parameters(self, best_params, best_score, all_results):
-        """Callback when optimization finishes - shows detailed grid search results."""
+    def apply_best_parameters(self, best_params: dict, best_score: float, all_results: dict):
+        """Processes and applies results emitted upon optimization completion."""
         if not best_params:
             QMessageBox.warning(self, "Optimization Failed", "No profitable parameters found.")
             return
         
-        # 1. Update UI inputs with best found values
+        # Override UI fields with optimal parameters
         self.spin_beta.setValue(best_params['beta_window'])
         self.spin_z.setValue(best_params['z_window'])
         self.spin_entry.setValue(best_params['entry_z'])
         self.spin_exit.setValue(best_params['exit_z'])
         self.spin_stop.setValue(best_params['stop_loss_z'])
         
-        # 2. Build detailed message with grid search statistics
         metric_name = self.combo_metric.currentText()
-        
-        # Calculate statistics from all results
         valid_scores = [s for s in all_results.values() if s > -999.0]
+        
         if valid_scores:
             avg_score = np.mean(valid_scores)
             std_score = np.std(valid_scores)
@@ -943,7 +987,6 @@ class MainWindow(QMainWindow):
         else:
             stats_text = f"Grid Search Statistics:\n  • No valid results found\n\n"
         
-        # Format best parameters
         params_text = (
             f"Best Parameters Found:\n"
             f"  • Beta Window: {best_params['beta_window']} days\n"
@@ -955,7 +998,6 @@ class MainWindow(QMainWindow):
         
         result_text = f"Best {metric_name}: {best_score:.4f}"
         
-        # 3. Display comprehensive results
         msg = QMessageBox(self)
         msg.setIcon(QMessageBox.Icon.Information)
         msg.setWindowTitle("Optimization Complete")
@@ -964,23 +1006,23 @@ class MainWindow(QMainWindow):
         msg.setStandardButtons(QMessageBox.StandardButton.Ok)
         msg.exec()
         
-        # 4. Run visualization with new parameters
         self.run_backtest()
 
-    def handle_error(self, error_msg):
+    def handle_error(self, error_msg: str):
+        """Displays error pop-ups and resets interaction states."""
         self.btn_run.setEnabled(True)
         self.btn_optimize.setEnabled(True)
         self.progress.setValue(0)
         QMessageBox.critical(self, "Simulation Error", f"An error occurred:\n{error_msg}")
 
     def display_results(self, cum_ret, pair_data, port_ret, mc_sims, extra_metrics, pairs):
+        """Renders backtest metrics, charts, and table populations post-processing."""
         self.pair_data_cache = pair_data
         self.cointegrated_pairs = pairs
         
-        # Update pairs found
         self.lbl_pairs_found.setText(f"Pairs Found: {len(pairs)}")
         
-        # Populate Table
+        # Populate Pair Metrics Table
         self.table.setRowCount(len(pair_data))
         sorted_pairs = sorted(pair_data.items(), key=lambda x: x[1]['sharpe'], reverse=True)
         
@@ -990,15 +1032,14 @@ class MainWindow(QMainWindow):
             total_ret = (1 + data['pnl']).cumprod().iloc[-1] - 1
             self.table.setItem(i, 2, QTableWidgetItem(f"{total_ret*100:.1f}%"))
             
-            # Display stop losses for this pair
             sl_count = data.get('stop_losses', 0)
             sl_item = QTableWidgetItem(str(sl_count))
             if sl_count > 5:
-                sl_item.setForeground(QColor('#ff4444'))  # Red if many stop losses
+                sl_item.setForeground(QColor('#ff4444')) 
             elif sl_count > 2:
-                sl_item.setForeground(QColor('#ffaa00'))  # Orange if moderate
+                sl_item.setForeground(QColor('#ffaa00')) 
             else:
-                sl_item.setForeground(QColor('#00ff00'))  # Green if few
+                sl_item.setForeground(QColor('#00ff00')) 
             self.table.setItem(i, 3, sl_item)
             
             status = "Profitable" if data['sharpe'] > 0 else "Loss"
@@ -1006,22 +1047,18 @@ class MainWindow(QMainWindow):
             item.setForeground(QColor('#00ff00') if status == "Profitable" else QColor('#ff4444'))
             self.table.setItem(i, 4, item)
 
-        # Equity Chart
+        # Plot Portfolio Equity vs Monte Carlo
         self.fig_equity.clear()
         ax = self.fig_equity.add_subplot(111)
         ax.set_facecolor('#2d2d2d')
         ax.grid(color='#444', linestyle='--', alpha=0.3)
         ax.tick_params(colors='white')
         
-        # Plot Monte Carlo
         for sim in mc_sims:
             ax.plot(sim, color='gray', alpha=0.1, linewidth=0.5)
         
-        # Plot Strategy
         ax.plot(cum_ret.values, color='#0d6efd', linewidth=2, label='Strategy', zorder=10)
         
-        # Mark train/test split if applicable
-        split_idx = None
         if extra_metrics.get('split_date'):
             split_idx = cum_ret.index.get_loc(extra_metrics['split_date'])
             ax.axvline(split_idx, color='orange', linestyle='--', linewidth=2, label='Train/Test Split')
@@ -1032,19 +1069,16 @@ class MainWindow(QMainWindow):
         ax.legend(loc='upper left', facecolor='#2d2d2d', edgecolor='white', labelcolor='white')
         self.canvas_equity.draw()
 
-        # FIX: Calculate Metrics ONLY on test period if walk-forward is enabled
+        # Compute Core Metrics on Test Sample (Walk-Forward) or Full Sample
         if extra_metrics.get('split_date') and self.chk_walk_forward.isChecked():
-            # Use only test period for metrics
             test_port_ret = port_ret.loc[extra_metrics['split_date']:]
             test_cum_ret = cum_ret.loc[extra_metrics['split_date']:]
             metric_label = "Test Period"
         else:
-            # Use full period
             test_port_ret = port_ret
             test_cum_ret = cum_ret
             metric_label = "Full Period"
         
-        # Calculate Metrics on selected period
         ann_ret = test_port_ret.mean() * 252
         ann_vol = test_port_ret.std() * np.sqrt(252)
         sharpe = ann_ret / ann_vol if ann_vol != 0 else 0
@@ -1056,7 +1090,6 @@ class MainWindow(QMainWindow):
         dd = (test_cum_ret / test_cum_ret.cummax()) - 1
         max_dd = dd.min()
 
-        # Display with label indicating which period
         self.lbl_sharpe.setText(f"Sharpe Ratio ({metric_label}): {sharpe:.2f}")
         self.lbl_sortino.setText(f"Sortino Ratio ({metric_label}): {sortino:.2f}")
         self.lbl_cagr.setText(f"Ann. Return ({metric_label}): {ann_ret*100:.2f}%")
@@ -1072,7 +1105,8 @@ class MainWindow(QMainWindow):
         self.lbl_avg_cost.setText(f"Avg Cost/Trade: {avg_cost*100:.3f}%")
         self.lbl_stop_losses.setText(f"Stop Losses Hit: {stop_losses}")
 
-    def drill_down_pair(self, item):
+    def drill_down_pair(self, item: QTableWidgetItem):
+        """Generates detailed Z-Score plot and execution flags for a selected pair."""
         row = item.row()
         pair_name = self.table.item(row, 0).text()
         data = self.pair_data_cache.get(pair_name)
@@ -1089,10 +1123,9 @@ class MainWindow(QMainWindow):
         ax.grid(color='#444', linestyle='--', alpha=0.3)
         ax.tick_params(colors='white')
 
-        # Plot Z-Score
         ax.plot(z.index, z.values, color='cyan', label='Z-Score', linewidth=1.5, alpha=0.8)
         
-        # Threshold Lines
+        # Indicator boundaries
         ax.axhline(self.spin_entry.value(), color='red', linestyle='--', label='Entry (Short)', alpha=0.7)
         ax.axhline(-self.spin_entry.value(), color='green', linestyle='--', label='Entry (Long)', alpha=0.7)
         ax.axhline(self.spin_exit.value(), color='yellow', linestyle=':', label='Exit (TP)', alpha=0.7)
@@ -1100,7 +1133,7 @@ class MainWindow(QMainWindow):
         ax.axhline(self.spin_stop.value(), color='orange', linestyle='-.', label='Stop Loss', alpha=0.7)
         ax.axhline(-self.spin_stop.value(), color='orange', linestyle='-.', alpha=0.7)
         
-        # Trade Markers
+        # Superimpose trade nodes
         buys = z.index[(pos == 1) & (pos.shift(1) != 1)]
         sells = z.index[(pos == -1) & (pos.shift(1) != -1)]
         
@@ -1116,6 +1149,7 @@ class MainWindow(QMainWindow):
         self.canvas_detail.draw()
 
     def load_yf(self):
+        """Displays dialog sequence to fetch asset vectors via yfinance."""
         dialog = YFinanceDialog(self)
         if dialog.exec():
             tickers, start = dialog.get_data()
@@ -1126,6 +1160,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "Data Error", str(e))
 
     def load_csv(self):
+        """Displays dialog sequence to fetch asset vectors via local disk mapping."""
         fname, _ = QFileDialog.getOpenFileName(self, "Open CSV", "", "CSV Files (*.csv)")
         if fname:
             try:
@@ -1135,6 +1170,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "File Error", str(e))
 
     def save_config(self):
+        """Dumps internal widget configuration boundaries to local JSON."""
         path, _ = QFileDialog.getSaveFileName(self, "Save Config", "", "JSON (*.json)")
         if path:
             cfg = {
@@ -1146,13 +1182,14 @@ class MainWindow(QMainWindow):
                 "cost": self.spin_cost.value(),
                 "slip": self.spin_slip.value(),
                 "walk_forward": self.chk_walk_forward.isChecked(),
-                "enable_cooldown": self.chk_enable_cooldown.isChecked(),  # NEW
-                "cooldown_days": self.spin_cooldown_days.value()  # NEW
+                "enable_cooldown": self.chk_enable_cooldown.isChecked(),
+                "cooldown_days": self.spin_cooldown_days.value()
             }
             with open(path, 'w') as f:
                 json.dump(cfg, f, indent=2)
 
     def load_config(self):
+        """Re-initializes widget properties from a dumped JSON configuration."""
         path, _ = QFileDialog.getOpenFileName(self, "Load Config", "", "JSON (*.json)")
         if path:
             with open(path, 'r') as f:
@@ -1165,10 +1202,11 @@ class MainWindow(QMainWindow):
             self.spin_cost.setValue(cfg.get('cost', 0.001))
             self.spin_slip.setValue(cfg.get('slip', 0.0005))
             self.chk_walk_forward.setChecked(cfg.get('walk_forward', True))
-            self.chk_enable_cooldown.setChecked(cfg.get('enable_cooldown', False))  # NEW
-            self.spin_cooldown_days.setValue(cfg.get('cooldown_days', 20))  # NEW
+            self.chk_enable_cooldown.setChecked(cfg.get('enable_cooldown', False))
+            self.spin_cooldown_days.setValue(cfg.get('cooldown_days', 20))
 
     def load_settings(self):
+        """Restores QWidget spatial locations bounded by previous executions."""
         geom = self.settings.value("geometry")
         state = self.settings.value("windowState")
         if geom:
@@ -1177,6 +1215,7 @@ class MainWindow(QMainWindow):
             self.restoreState(state)
 
     def closeEvent(self, event):
+        """Preserves GUI boundaries sequentially upon application lifecycle exit."""
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("windowState", self.saveState())
         super().closeEvent(event)
