@@ -391,30 +391,42 @@ class BacktestWorker(QThread):
             if target not in self.strategy.assets:
                 self.error_signal.emit(f"Le ticker {target} est absent des données.")
                 return
-
-            log_df = np.log(self.strategy.df)
-            corr = self.strategy.df.corr()
-
-            # compute correlation with HG=F (excluding HG=F itself)
-            correlations_with_target = corr[target].drop(labels=[target]).sort_values(ascending=False)
-
-            # take the n actifs the most correlated
+            
+                        # 1. Utiliser UNIQUEMENT les données d'entraînement pour la sélection
+            train_df = self.strategy.train_data
+            log_train_df = np.log(train_df).replace([np.inf, -np.inf], np.nan).dropna(axis=1)
+            
+            # 2. Calculer la corrélation sur le passé uniquement
+            # On ne regarde pas 'self.strategy.df' ici pour éviter le Selection Bias
+            corr_train = train_df.corr()
+            
+            if target not in train_df.columns:
+                self.error_signal.emit(f"Le ticker {target} est absent des données d'entraînement.")
+                return
+            
+            # 3. Identifier les candidats basés sur le passé
+            correlations_with_target = corr_train[target].drop(labels=[target]).sort_values(ascending=False)
+            
+            # Prendre les n actifs les plus corrélés DURANT la période de train
             n = 8
-            top_5_tickers = correlations_with_target.head(5).index.tolist()
-            top_10_tickers = correlations_with_target.head(10).index.tolist()
             top_n_tickers = correlations_with_target.head(n).index.tolist()
             pairs = []
+            
             for s2 in top_n_tickers:
                 s1 = target # HG=F
-                res = linregress(log_df[s2], log_df[s1])
-                spread = log_df[s1] - (res.slope * log_df[s2] + res.intercept)
+                # Régression et ADF effectués strictement sur train_df
+                res = linregress(log_train_df[s2], log_train_df[s1])
+                spread_train = log_train_df[s1] - (res.slope * log_train_df[s2] + res.intercept)
                 
-                # Test ADF
-                if adfuller(spread)[1] < 0.05: 
+                p_val = adfuller(spread_train.dropna())[1]
+                
+                if p_val < 0.05: 
                     pairs.append((s1, s2))
+                    print(f"Paire validée sur Train: {s1}-{s2} (p-val: {p_val:.4f})")
                 else:
-                    pairs.append((s1, s2)) 
-                    print(f"Paire {s1}-{s2} écartée : Non cointégrée (p-val > 0.05)")
+                    # Optionnel : On peut quand même l'ajouter pour test, 
+                    # mais la rigueur voudrait qu'on ne garde que les p < 0.05
+        print(f"Paire écartée : Non cointégrée sur la période Train uniquement.")
             if not pairs:
                 self.error_signal.emit("No cointegrated pairs found in training data. Try different assets or adjust thresholds.")
                 return
